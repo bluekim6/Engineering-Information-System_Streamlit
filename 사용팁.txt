@@ -1,0 +1,168 @@
+ 
+
+
+
+
+ - Streamlit 앱이 띄워져 있다면 재시작 하셔야 @st.cache_data가 새 데이터를 다시 읽습니다.
+  - 다른 마스터 파일과의 외래키 정합성: Document_master.xlsx / Drawing_master.xlsx / Comment_master.xlsx는 아직 기존 시드 TagNo(P-1101A,     
+  K-2101 등)를 참조하고 있어서, 새 TagNo(P-1001, C-2001 등)와 매칭되지 않습니다. tag_detail/comment 페이지에서 도면/코멘트가 안 떠 보일 수   
+  있어요. 다음에 이 부분도 새 TagNo 기준으로 재시드할지 알려 주시면 처리하겠습니다.
+  - 재실행 가능: Tag_Register.xlsx가 또 바뀌면 python eis_app/data/_import_tag_register.py 다시 돌리시면 됩니다.
+
+
+
+  - Streamlit 앱 재시작 필요 — @st.cache_data 가 옛 데이터를 들고 있을 수 있습니다.
+  - PDF 파일: drawings/ 폴더에 32개 도면 중 일부만 실제 PDF 가 있습니다. 없는 도면 클릭 시 PDF 뷰어에 "도면 파일을 찾을 수 없습니다 (경로:   
+  ...)" 가 표시됩니다 (정상 동작).
+  - Tag_Register.xlsx 가 또 갱신되면: _import_tag_register.py → _reseed_dependents.py 순서로 다시 실행하시면 됩니다.
+
+
+
+  ● 현재 코드베이스 기준으로 백 데이터 수정 절차를 정확히 설명하기 위해 reseed 스크립트들과 데이터 흐름을 한번 짚어보겠습니다.                                                            
+
+  Read 1 file (ctrl+o to expand)    
+                                                                                                                                                                                        
+● 백 데이터 수정 가이드
+                                                                                                                                                                                        
+  1. 데이터 파일의 두 계층                                                                 
+                                                                                                                                                                                          EngineeringDT_1/                      ← [Layer 1] 원천 데이터 (사람이 직접 편집)                                                                                                        ├── Tag_Register.xlsx                 ← Tag 마스터 (System/Package/42 컬럼)                                                                                                           
+  ├── Document_List.xlsx                ← 도면 Title/Revision 정본                                                                                                                      
+  ├── Manufacture_list.xlsx             ← 제조사 원천
+  └── Document_to_Tag.xlsx
+
+  eis_app/data/                         ← [Layer 2] 앱이 직접 읽는 파일
+  ├── Equipment_master.xlsx             ← Tag_Register 에서 변환된 표준 스키마
+  ├── Document_master.xlsx              ← 시드된 문서 마스터
+  ├── Drawing_master.xlsx               ← 시드된 도면 ↔ Tag 매핑
+  ├── Comment_master.xlsx               ← 코멘트 (런타임에 사용자 편집)
+  ├── Manufacture_list.xlsx             ← 시드된 제조사 상세
+  └── History_log.xlsx                  ← 편집 이력 (런타임 자동 기록)
+
+  핵심 원칙: Layer 1 을 바꾸면 Layer 2 를 재생성해야 한다 (단, Document_List.xlsx 는 예외 — 앱이 런타임에 직접 읽음).
+
+  ---
+  2. 시나리오별 절차
+
+  A. Document_List.xlsx 변경 (DrawingTitle / Revision)
+
+  가장 단순합니다. 변환 스크립트 불필요.
+
+  1. 루트의 Document_List.xlsx 직접 편집 (Document Number / Document Name / Revision 컬럼).
+  2. 파일 닫기 (Excel 잠금 해제).
+  3. 앱 재시작 또는 Streamlit 캐시 초기화 (사이드바 메뉴 Clear cache 또는 R 키).
+
+  이유: data_loader.load_document_list() 가 매 페이지 로드 시 직접 읽고, tag_detail.py 가 get_document_meta() 로 DrawingNo 매칭해 표시합니다.
+
+  ---
+  B. Tag_Register.xlsx 변경 (Tag 추가/수정/삭제)
+
+  Layer 2 의 Equipment_master.xlsx + 의존 마스터 4종을 모두 재생성해야 합니다.
+
+  # 1) Tag_Register.xlsx 편집 후 저장 + Excel 닫기
+
+  # 2) Equipment_master 재생성 (Tag_Register → 표준 스키마 변환)
+  python eis_app/data/_import_tag_register.py
+
+  # 3) Drawing/Document/Comment/Manufacture 재시드 (Equipment_master 기준)
+  python eis_app/data/_reseed_dependents.py
+
+  # 4) 앱 재시작
+
+  각 스크립트가 하는 일:
+
+  ┌─────────────────────────┬───────────────────────┬──────────────────────────────────────────────────────────────────┐
+  │        스크립트         │         입력          │                               출력                               │
+  ├─────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────────┤
+  │ _import_tag_register.py │ Tag_Register.xlsx     │ Equipment_master.xlsx (10 컬럼 표준)                             │
+  ├─────────────────────────┼───────────────────────┼──────────────────────────────────────────────────────────────────┤
+  │ _reseed_dependents.py   │ Equipment_master.xlsx │ Drawing/Document/Comment/Manufacture_list.xlsx (자동 *.bak 백업) │
+  └─────────────────────────┴───────────────────────┴──────────────────────────────────────────────────────────────────┘
+
+  ⚠️ _reseed_dependents.py 는 Comment_master.xlsx 를 덮어씁니다 (런타임에 쌓인 코멘트가 날아갑니다). 코멘트 보존이 필요하면 실행 전 백업 또는 스크립트 수정이 필요합니다.
+
+  ---
+  C. Manufacture_list.xlsx (루트) 변경
+
+  현재 _reseed_dependents.py 가 Equipment 의 ManufactureName 기반으로 eis_app/data/Manufacture_list.xlsx 를 재시드하는 구조라, 루트 파일은 참조용이고 앱은 eis_app/data/ 의 동명 파일을 
+  봅니다. 변경하려면:
+  - eis_app/data/Manufacture_list.xlsx 를 직접 편집 (가장 빠름), 또는
+  - 루트 Manufacture_list.xlsx 편집 후 _reseed_dependents.py 의 시드 로직을 손봐야 함.
+
+  ---
+  D. 컬럼 추가 (예: Tag_Register 에 신규 Attribute)
+
+  1. Tag_Register.xlsx 에 새 컬럼 추가 (예: Attribute BE).
+  2. python eis_app/data/_import_tag_register.py 만 다시 실행 → Equipment_master 갱신은 불필요 (Tag Detail Step 1 은 Tag_Register 를 직접 읽어 모든 컬럼을 자동 표시).
+  3. 앱 재시작.
+
+  → Tag Detail 화면은 따로 손댈 필요 없음 (_render_info_grid 가 컬럼을 동적으로 순회).
+
+  → 단, Equipment_master 표준 컬럼(Description, ReferenceDrawing 등) 으로 매핑되는 컬럼이라면 _import_tag_register.py 의 매핑 규칙 수정 필요.
+
+  ---
+  3. 자주 만나는 함정
+
+  ┌──────────────────────────────────────────────┬────────────────────────────────┬─────────────────────────────────────┐
+  │                     증상                     │              원인              │                해결                 │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 변경한 값이 화면에 그대로 안 나옴            │ @st.cache_data 캐시가 살아있음 │ 앱 재시작 또는 사이드바 Clear cache │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 엑셀 저장 실패: PermissionError              │ 파일이 Excel 에서 열려 있음    │ Excel 종료 후 재시도                │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ ~$파일명.xlsx 가 보임                        │ Excel 의 잠금 파일 (정상)      │ 무시 또는 Excel 닫으면 자동 삭제    │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 새 Tag 가 Hierarchy 에는 보이는데 도면 이 빔 │ _reseed_dependents.py 미실행   │ reseed 실행                         │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ Tag_Register 컬럼명을 영문→한글 변경         │ 코드가 영문 컬럼명을 하드코딩  │ 컬럼명 유지 권장                    │
+  └──────────────────────────────────────────────┴────────────────────────────────┴─────────────────────────────────────┘
+
+  ---
+  4. 안전 체크리스트
+
+  - 편집 전: 원본 파일 한 부 따로 백업 (수동, _reseed 의 .bak 와 별개)
+  - 편집 중: Excel 에서 파일을 닫은 상태로 스크립트 실행
+  - 편집 후: python -c "import pandas as pd; print(pd.read_excel('Tag_Register.xlsx').shape)" 로 행/열 수 빠른 검증
+  2. python eis_app/data/_import_tag_register.py 만 다시 실행 → Equipment_master 갱신은 불필요 (Tag Detail Step 1 은 Tag_Register 를 직접 읽어 모든 컬럼을 자동 표시).
+  3. 앱 재시작.
+
+  → Tag Detail 화면은 따로 손댈 필요 없음 (_render_info_grid 가 컬럼을 동적으로 순회).
+
+  → 단, Equipment_master 표준 컬럼(Description, ReferenceDrawing 등) 으로 매핑되는 컬럼이라면 _import_tag_register.py 의 매핑 규칙 수정 필요.
+
+  ---
+  3. 자주 만나는 함정
+
+  ┌──────────────────────────────────────────────┬────────────────────────────────┬─────────────────────────────────────┐
+  │                     증상                     │              원인              │                해결                 │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 변경한 값이 화면에 그대로 안 나옴            │ @st.cache_data 캐시가 살아있음 │ 앱 재시작 또는 사이드바 Clear cache │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 엑셀 저장 실패: PermissionError              │ 파일이 Excel 에서 열려 있음    │ Excel 종료 후 재시도                │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ ~$파일명.xlsx 가 보임                        │ Excel 의 잠금 파일 (정상)      │ 무시 또는 Excel 닫으면 자동 삭제    │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ 새 Tag 가 Hierarchy 에는 보이는데 도면 이 빔 │ _reseed_dependents.py 미실행   │ reseed 실행                         │
+  ├──────────────────────────────────────────────┼────────────────────────────────┼─────────────────────────────────────┤
+  │ Tag_Register 컬럼명을 영문→한글 변경         │ 코드가 영문 컬럼명을 하드코딩  │ 컬럼명 유지 권장                    │
+  └──────────────────────────────────────────────┴────────────────────────────────┴─────────────────────────────────────┘
+
+  ---
+  4. 안전 체크리스트
+
+  - 편집 전: 원본 파일 한 부 따로 백업 (수동, _reseed 의 .bak 와 별개)
+  - 편집 중: Excel 에서 파일을 닫은 상태로 스크립트 실행
+  - 편집 후: python -c "import pandas as pd; print(pd.read_excel('Tag_Register.xlsx').shape)" 로 행/열 수 빠른 검증
+  - 앱 측: Streamlit 사이드바의 Settings → Clear cache 한번 눌러 캐시 무효화
+
+  ---
+  5. TL;DR
+
+  ┌───────────────────────────────┬─────────────────────────────────────────────────────────────┐
+  │           변경 대상           │                            명령                             │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Document_List.xlsx            │ 파일만 저장 → 앱 재시작 (스크립트 X)                        │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ Tag_Register.xlsx             │ _import_tag_register.py → _reseed_dependents.py → 앱 재시작 │
+  ├───────────────────────────────┼─────────────────────────────────────────────────────────────┤
+  │ eis_app/data/*.xlsx 직접 편집 │ 앱 재시작 (단, 다음 reseed 실행 시 덮어써짐 주의)           │
+  └───────────────────────────────┴─────────────────────────────────────────────────────────────┘
